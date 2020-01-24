@@ -1,0 +1,376 @@
+;    Filename: TrafficLights (Project 5)                                                      
+;    Date Created: 17/ 09/ 2018                                                                                             
+;    Author: SHANE DEWAR -214502730                                                                                                  
+;  Description: This is the assembly code for a Traffic Light Systems
+;               Port C: RC0-RC6 - SSD`s
+;               Port B: RB7- SSD toggle, RB6 - IR Input ,RB4,5 = LED 2
+;               Port A: RA0,1,2 (LEDS) RA4 =LED2
+;*******************************************************************************
+;*                MICRO CONTROLLER DEFINITIONS:                                *
+;*******************************************************************************    
+list p=16f690             ; chip pic16f690
+#include "P16F690.inc"    ; including PIC default
+;*******************************************************************************    
+__CONFIG _CP_OFF & _CPD_OFF & _BOR_OFF & _PWRTE_ON & _WDT_OFF & _INTRC_OSC_NOCLKOUT & _MCLRE_OFF & _FCMEN_OFF & _IESO_OFF
+;*******************************************************************************
+;*                  VARIABLE DEFINITIONS                                       *
+;*******************************************************************************
+  cblock 20h ;start of general purpose register addresses
+    Counter      ;Holds display valuedf
+    Counter2
+    Seconds
+    Mode
+    Mode2
+    ESet          ;emergency set
+    InputVal  ;Binary to BCD conversion registers
+    Tens
+    Units
+    w_temp    ;used for context saving
+    s_temp
+    p_temp
+  endc    
+;*******************************************************************************
+; Reset Vector
+;*******************************************************************************
+  RES_VECT  CODE    0x0000            ; processor reset vector
+   GOTO  SETUP                   ; go to beginning of program
+   
+   INT_VECTOR CODE 0x0004       ;interupt vector address
+ GOTO ISR
+;*******************************************************************************
+; MAIN PROGRAM
+;*******************************************************************************
+MAIN_PROG CODE                      ; let linker place main program
+
+SETUP
+     banksel INTCON
+      bsf INTCON, GIE           ; Enabling interrupts
+     bsf INTCON, PEIE
+     
+     clrw                       ; Clearing W register from previous runs
+      banksel ANSEL             ; Select bank 2
+     clrf ANSEL                 ; Digital I/O
+     
+     banksel TRISC              ; Setting up ports: 1-Input 0-Output
+       clrf TRISC               ; setting PORTC -Output
+        movlw b'01000000'
+       movwf PORTB              ; rb7 output(Toggle), 4,5 out(LED2) , 6 input(IR)
+     clrf TRISA                 ; output - leds
+      
+     banksel T1CON              ; Timer 1 setup
+      bsf T1CON,5               ; Tmr1 prescalar 4
+       bsf T1CON,0              ; Tmr1 on
+        movlw b'11110110'       ; Setting up TMR1 for 10ms overflow
+       movwf TMR1H
+      movlw b'00111100'
+     movwf TMR1L
+   
+     banksel PIE1
+      bsf PIE1,0                ; Timer1 interupt enabled
+     
+     banksel PORTC              ; Select Bank 0
+       clrf PORTC
+        clrf PORTA
+         movlw b'00000000'       ; Enable units
+        movwf PORTB
+       clrf Units               ; Clearing tens+ Units Value
+     clrf Tens 
+     
+     movlw 0x0A               ;10 as an initial Time(for green)
+       movwf Counter
+        movlw b'00000001'
+        movwf Mode            ;mode = green
+       movlw 0x64             ;100- to count each second
+        movwf Seconds
+         bsf PORTA,RA4
+        bcf PORTB,RB4
+       movlw b'00000100'
+       movwf Mode2
+      clrf ESet            ; no emergency has occcured
+     GOTO LOOP
+;*******************************************************************************
+;*                        Interupt Service Routine                                    *
+;*******************************************************************************
+;* Description: Timer1 Overflow Interupt:
+;*              The Interupt handles the multiplexing by switching each display             
+;*              on/off and Outputing the Tens or Units Value to PortC
+;******************************************************************************* 
+ISR
+    BCF INTCON,GIE     ;disable interupts
+     movwf w_temp      ;context saving
+       movf STATUS,w
+       movwf s_temp
+      movf PCLATH,w
+     movwf p_temp
+   
+    call Bin2BCD
+     call Multiplex
+    
+    decfsz Seconds      ;decrementing seconds timer 
+    goto Timer
+    movlw 0x64          ;reload 100 mSe
+    movwf Seconds
+    
+    btfsc Mode2,0       ;checking if Red Mode
+    call LED2
+    decfsz Counter      
+    goto Timer
+    
+    btfsc Mode,0      
+    ;movlw 0x05         ;orange next - 010 - 5s
+    call Green
+    btfsc Mode,1
+    ;movlw 0x0F         ;red next - 100 - 15s
+    call Orange
+    btfsc Mode,2
+    ;movlw 0x0A         ;green next - 001 - 10s
+    call Red
+    ;movwf Counter
+    
+    clrc
+      rlf Mode             ;moving to next mode
+       movlw b'00001000'
+        subwf Mode,w
+       btfss STATUS,Z       ;if mode is out of bounds, reset
+       goto Timer
+      movlw 0x01
+    movwf Mode
+    
+   Timer 
+    bcf PIR1,TMR1IF         ;clearing overflow flag
+      movlw b'11110110'      ;reloading timer - 10mss
+        movwf TMR1H
+          movlw b'00111100'
+          movwf TMR1L
+        movf Mode,w
+       movwf PORTA
+      btfss Mode,2         ; re-lighting red led2
+     bsf PORTA,RA4
+     
+   Restore 
+    movf p_temp,w        ;context restores
+    movwf PCLATH
+    movf s_temp,w
+    movwf STATUS
+    movf w_temp,w
+    BSF INTCON,GIE     ;re-enabling interupts
+    retfie
+;*******************************************************************************
+;*                        Main Loop                                            *
+;*******************************************************************************     
+LOOP 
+    btfsc ESet,0            ;poll infrared input
+    GOTO LOOP
+    btfss PORTB,RB6
+    call Emergency   
+GOTO LOOP                  ; loop forever
+    
+;*******************************************************************************
+  LookUpSSD
+          addwf PCL,f
+	  retlw b'01000000' ;0
+	  retlw b'01111001' ;1
+	  retlw b'00100100' ;2
+	  retlw b'00110000' ;3
+	  retlw b'00011001' ;4
+	  retlw b'00010010' ;5
+	  retlw b'00000010' ;6
+	  retlw b'01111000' ;7
+	  retlw b'00000000' ;8
+	  retlw b'00010000' ;9  
+;*******************************************************************************	  
+Green
+    movlw 0x05       ;orange next - 010 - 5s  
+     movwf Counter
+    bcf ESet,0       ; look for new emergency vehicles
+return
+;*******************************************************************************	  
+Orange
+   movlw 0x0F        ;red next - 100 - 15s
+    movwf Counter
+     movlw 0x0A        ; 10 seconds for green (LED2)
+      movwf Counter2
+      bsf Mode2, 0      ;set green mode
+     bsf PORTB,RB5
+   bcf PORTA,RA4
+return
+;*******************************************************************************	  
+Red 
+   movlw 0x0A            ;green next - 001 - 10s
+     movwf Counter
+      bsf PORTA,RA4      set second LED`s to Red
+       bcf PORTB,RB4
+      bcf PORTB,RB5
+     movlw b'00000100'   ; red mode
+   movwf Mode2
+return
+;*******************************************************************************  
+LED2
+  decfsz Counter2          ;determining 5s of yellow
+    return
+     bcf PORTB,RB5         ; if 0, change to red
+      bsf PORTB,RB4
+     movlw b'00000010'
+   movwf Mode2
+return
+;*******************************************************************************	
+Emergency
+     btfsc PORTB,RB6
+      return  
+        bsf ESet, 0        ;emergency has occured  
+        btfsc Mode2,1      ;LED2 orange?
+     return                ;already orange so return
+        btfsc Mode2,0      ; LED2 green?
+     goto green
+        btfsc Mode,2       ;Main red?
+     return
+       movlw b'00000001'  ;set green mode
+       movwf Mode
+       movlw 0x0A         ;reset 10s Timer
+       movwf Counter
+    return    
+green 
+   movlw 0x05             ;5 second counter2
+     movwf Counter2
+      movwf Counter
+       movlw b'00000010'  ; mode2 orange
+     movwf Mode2      
+return
+ ;*****************************************************************************
+ ;*********************** DELAY SUB-ROUTINE ***********************************
+ ;*****************************************************************************
+ ;delay routine with multiple delay values *
+ ;call specified delay value
+ ;or load w with custom value and call Delay
+ ;max 255ms Delay
+ ;*****************************************************************************
+ Del0  retlw 0x00      ;returns immediatly - 0ms
+ Del1  movlw d'1'      ; Delay 1ms
+       goto Delay
+ Del5  movlw d'5'      ; Delay 5ms
+       goto Delay
+ Del10 movlw d'10'     ; Delay 10ms
+       goto Delay
+ Del20 movlw d'20'     ; Delay 20ms
+       goto Delay
+ Del50 movlw d'50'     ; Delay 50ms
+       goto Delay
+ Del100 movlw d'100'   ; Delay 100ms
+        goto Delay
+ Del250 movlw d'250'   ; Delay 250ms
+ Delay  movwf count1 
+ d1   movlw 0xC7       ;Delay 1ms
+      movwf counta
+      movlw 0x01
+      movwf countb
+ Delay_0
+      decfsz counta, f
+      goto $+2
+      decfsz countb,f
+      goto Delay_0
+      decfsz count1,f
+      goto d1
+      retlw 0x00	  
+ ;*****************************************************************************
+ ;*********************** Multiplex ***********************************
+ ;*****************************************************************************
+ ; This Method determines which Display to Toggle and outputs the corresponding 
+ ; Tens or Units Value to Output to PORTC
+ ;*****************************************************************************
+Multiplex
+     btfsc PORTB,7       ; Check if Tens or Units is currently on
+    GOTO toggle10
+    GOTO toggle01  
+toggle01
+      movf Units,w
+       andlw 0x0f          ; Make sure in range of table
+    call LookUpSSD
+      movwf PORTC         ; Output Units digit
+       movf PORTB, w
+        xorlw b'10000000'   ; Toggle RB7
+       movwf PORTB
+      btfsc Mode2,1       ;orange?
+     bsf PORTB,RB4
+      btfsc Mode2,0      ;green?
+       bsf PORTB,RB5
+    return  
+toggle10
+    movf Tens,w
+      andlw 0x0f          ; Make sure in range of table
+        call LookUpSSD
+        movwf PORTC         ; Output Tens digit
+       movf PORTB, w
+       xorlw b'10000000'   ; Toggle RB7
+      movwf PORTB
+     btfsc Mode2,1       ;orange?
+        bsf PORTB,RB4
+       btfsc Mode2,0      ;green?
+     bsf PORTB,RB5
+    return  
+;*******************************************************************************
+;* Module Name: Bin2BCD
+;* Description: 
+;* This Function uses the Division by 10 method to convert the binary input 
+;* value stored in the InputVal reg, to a packed BCD value which is returned in
+;* the W reg.
+;* 
+;* This is acheived by initially dividing the the Input value by 10 and saving
+;* the quotient(Tens BCD value) in bcd1 reg. the division by 10 is calculated 
+;* using the following formula: 
+;*                              x/10 = (x + x/2 + x/8 - x/64)/16
+;* where each division(2,8,16,64) is achieved with a corresponding number of rrf  
+;* functions(each rotate right divides by 2). 
+;* The units value is obtained by multiplying the Tens value by 10 using the 
+;* form.ula: rlf( rlf(rlf(X)) + X)= 2*( 2*(2*( X)) + X) = 2*(4*X +X) = 10*X
+;* This value is then subtracted from the original binary value to obtain the 
+;* units value
+;* The Units and Tens are concatenated using XOR function and returned in the w
+;* register.
+;******************************************************************************* 
+;* Registers:   W, InputVal,bcd1,bcd2
+;* Inputs:      InputVal(Binary value)
+;* Outputs:     Packed BCD(in the W register)
+;* Performance:  cycles : 33
+;*******************************************************************************    
+Bin2BCD
+         movf Counter,w
+	  sublw d'99'         ; Test if >99
+	   btfss STATUS,C
+	 clrf Counter
+	  movf Counter,w
+	    movwf InputVal
+           movwf Tens          ; Copying input value
+          movwf Units
+ CalcTens:	 
+	 clrc                ; Clearing carry flag 
+	   rrf InputVal,f      ; x/2
+	  movf InputVal,w
+	  addwf Tens,f        ; x + x/2
+	   rrf InputVal,f      ; x/4
+	 clrc
+	   rrf InputVal,f      ; x/8
+	 movf InputVal,w
+	 addwf Tens,f        ; x + x/2 + x/8
+	   rrf InputVal,f      ; x/16
+	 clrc
+	   rrf InputVal,f      ; x/32
+	 clrc
+	   rrf InputVal,f      ; x/64
+	 clrc
+	   movf InputVal,w
+	   subwf Tens,f        ; x + x/2 + x/8 - x/64
+	 
+	 swapf Tens,w        ; (x + x/2 + x/8 - x/64)/16
+	   andlw 0x0f          ; Clearing fractional nibble
+	   movwf Tens        
+	 movwf InputVal
+ CalcUnits:
+	 clrc
+	   rlf InputVal,f       ; y*2
+	   rlf InputVal,f       ; y*4
+	  addwf InputVal,f     ; (y*4 + y) = y*5
+	   rlf InputVal,f       ; y*10 = 10* Tens values
+	 movf InputVal,w
+	 subwf Units,f        ; Sub 10*Tens from Original value to get unit
+Return
+ END
